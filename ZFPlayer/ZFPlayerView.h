@@ -33,6 +33,8 @@
 - (void)zf_playerBackAction;
 /** 下载视频 */
 - (void)zf_playerDownload:(NSString *)url;
+/** 更多按钮 */
+- (void)zf_playerMoreAction;
 
 @end
 
@@ -52,6 +54,9 @@ typedef NS_ENUM(NSInteger, ZFPlayerState) {
     ZFPlayerStatePause       // 暂停播放
 };
 
+/**
+ 视频播放器视图
+ */
 @interface ZFPlayerView : UIView <ZFPlayerControlViewDelagate>
 
 /** 视频model */
@@ -75,6 +80,12 @@ typedef NS_ENUM(NSInteger, ZFPlayerState) {
 @property (nonatomic, assign) BOOL                    cellPlayerOnCenter;
 /** 是否允许自动转屏, 默认YES */
 @property (nonatomic, assign) BOOL                    allowAutoRotate;
+/** 允许双指点击进行全屏/非全屏切换, 默认NO */
+@property (nonatomic, assign) BOOL                    enableFullScreenSwitchWith2Fingers;
+/** 播放器添加到的视图控制器, 包含ZFPlayerView容器视图的视图控制器 */
+@property (nonatomic, weak) UIViewController *rootViewController;
+/** 是否正在旋转屏幕 */
+@property (nonatomic, assign, readonly) BOOL isRotating;
 
 /**
  *  单例，用于列表cell上多个视频

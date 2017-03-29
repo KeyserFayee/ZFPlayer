@@ -26,6 +26,7 @@
 #import <MediaPlayer/MediaPlayer.h>
 #import "UIView+CustomControlView.h"
 #import "ZFPlayer.h"
+#import "Masonry.h"
 
 //忽略编译器的警告
 #pragma clang diagnostic push
@@ -36,6 +37,48 @@ typedef NS_ENUM(NSInteger, PanDirection){
     PanDirectionHorizontalMoved, // 横向移动
     PanDirectionVerticalMoved    // 纵向移动
 };
+
+#pragma mark - ZFPlayerViewController
+
+/**
+ 用于屏幕旋转的视图控制器
+ */
+@interface ZFFullscreenPlayerViewController : UIViewController
+
+@end
+
+@implementation ZFFullscreenPlayerViewController
+
+- (instancetype)initWithNibName:(NSString *)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil {
+    self = [super initWithNibName:nibNameOrNil bundle:nibBundleOrNil];
+    if (self) {
+    }
+    return self;
+}
+
+//  是否支持自动转屏
+- (BOOL)shouldAutorotate
+{
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UIInterfaceOrientationMaskLandscapeRight;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
+{
+    return UIInterfaceOrientationLandscapeRight;
+}
+
+- (BOOL)prefersStatusBarHidden {
+    return YES;
+}
+
+@end
+
+#pragma mark - ZFPlayerView
 
 @interface ZFPlayerView () <UIGestureRecognizerDelegate,UIAlertViewDelegate>
 
@@ -85,6 +128,10 @@ typedef NS_ENUM(NSInteger, PanDirection){
 @property (nonatomic, strong) UIImage                *thumbImg;
 /** 亮度view */
 @property (nonatomic, strong) ZFBrightnessView       *brightnessView;
+/** 用于全屏展示的视图控制器 */
+@property (nonatomic, strong) ZFFullscreenPlayerViewController *fullScreenViewController;
+/** 视频填充模式 */
+@property (nonatomic, copy) NSString                 *videoGravity;
 
 #pragma mark - UITableViewCell PlayerView
 
@@ -102,6 +149,8 @@ typedef NS_ENUM(NSInteger, PanDirection){
 @property (nonatomic, assign) BOOL                   isChangeResolution;
 /** 是否正在拖拽 */
 @property (nonatomic, assign) BOOL                   isDragged;
+/** 是否正在旋转屏幕 */
+@property (nonatomic, assign) BOOL isRotating;
 
 @property (nonatomic, strong) UIView                 *controlView;
 @property (nonatomic, strong) ZFPlayerModel          *playerModel;
@@ -255,11 +304,58 @@ typedef NS_ENUM(NSInteger, PanDirection){
  *  player添加到fatherView上
  */
 - (void)addPlayerToFatherView:(UIView *)view {
-    [self removeFromSuperview];
-    [view addSubview:self];
-    [self mas_remakeConstraints:^(MASConstraintMaker *make) {
-        make.edges.mas_offset(UIEdgeInsetsZero);
-    }];
+    if (self.fullScreenViewController && self.rootViewController != nil) {
+        self.isRotating = YES;// 记录正在旋转屏幕
+        
+        UIView *playerViewSnapshot = [self snapshotViewAfterScreenUpdates:YES];
+        playerViewSnapshot.transform = CGAffineTransformMakeRotation(M_PI_2);
+        [self.rootViewController.view addSubview:playerViewSnapshot];
+        [playerViewSnapshot mas_makeConstraints:^(MASConstraintMaker *make) {
+            make.center.mas_equalTo(0);
+            make.width.equalTo(self.rootViewController.view.mas_height);
+            make.height.equalTo(self.rootViewController.view.mas_width);
+        }];
+        [self.rootViewController.view layoutIfNeeded];
+        
+        [self.fullScreenViewController dismissViewControllerAnimated:NO completion:^{
+            [self removeFromSuperview];
+            [playerViewSnapshot addSubview:self];
+            [self mas_remakeConstraints:^(MASConstraintMaker *make) {
+                make.edges.mas_equalTo(0);
+            }];
+            [playerViewSnapshot layoutIfNeeded];
+            
+            [playerViewSnapshot mas_remakeConstraints:^(MASConstraintMaker *make) {
+                make.edges.equalTo(view);
+            }];
+            
+            [[UIApplication sharedApplication] setStatusBarOrientation:UIInterfaceOrientationPortrait animated:NO];
+            [UIView animateWithDuration:[UIApplication sharedApplication].statusBarOrientationAnimationDuration animations:^{
+                playerViewSnapshot.transform = CGAffineTransformIdentity;
+                [self.rootViewController.view layoutIfNeeded];
+            } completion:^(BOOL finished) {
+                [self removeFromSuperview];
+                [playerViewSnapshot removeFromSuperview];
+                [view addSubview:self];
+                [self mas_remakeConstraints:^(MASConstraintMaker *make) {
+                    make.edges.equalTo(view);
+                }];
+                [view layoutIfNeeded];
+                
+                self.isRotating = NO;// 完成旋转屏幕
+            }];
+        }];
+    } else {
+        // 这里应该添加判断，因为view有可能为空，当view为空时[view addSubview:self]会crash
+        if (view) {
+            [self removeFromSuperview];
+            [view addSubview:self];
+            [self mas_remakeConstraints:^(MASConstraintMaker *make) {
+                make.edges.mas_offset(UIEdgeInsetsZero);
+            }];
+            [view layoutIfNeeded];
+        }
+    }
 }
 
 /**
@@ -383,7 +479,7 @@ typedef NS_ENUM(NSInteger, PanDirection){
     
     self.backgroundColor = [UIColor blackColor];
     // 此处为默认视频填充模式
-    self.playerLayer.videoGravity = AVLayerVideoGravityResizeAspect;
+    self.playerLayer.videoGravity = self.videoGravity;
     
     // 自动播放
     self.isAutoPlay = YES;
@@ -439,7 +535,10 @@ typedef NS_ENUM(NSInteger, PanDirection){
     if (self.isAutoPlay) {
         UITouch *touch = [touches anyObject];
         if(touch.tapCount == 1) {
-            [self performSelector:@selector(singleTapAction:) withObject:@(NO) ];
+            if (self.enableFullScreenSwitchWith2Fingers) {
+                [self performSelector:@selector(singleTapAction:) withObject:@(NO) ];
+                return;
+            }
         } else if (touch.tapCount == 2) {
             [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(singleTapAction:) object:nil];
             [self doubleTapAction:touch.gestureRecognizers.lastObject];
@@ -675,6 +774,11 @@ typedef NS_ENUM(NSInteger, PanDirection){
     if (orientation != UIInterfaceOrientationPortrait) {//
         // 这个地方加判断是为了从全屏的一侧,直接到全屏的另一侧不用修改限制,否则会出错;
         if (currentOrientation == UIInterfaceOrientationPortrait) {
+            if (!self.allowAutoRotate && self.rootViewController) {
+                [self forcePlayerViewRotate2FullScreenOrientationLandscapeRight];
+                return;
+            }
+            
             [self removeFromSuperview];
             ZFBrightnessView *brightnessView = [ZFBrightnessView sharedBrightnessView];
             [[UIApplication sharedApplication].keyWindow insertSubview:self belowSubview:brightnessView];
@@ -697,8 +801,61 @@ typedef NS_ENUM(NSInteger, PanDirection){
     self.transform = [self getTransformRotationAngle];
     // 开始旋转
     [UIView commitAnimations];
-    [self.controlView layoutIfNeeded];
     [self.controlView setNeedsLayout];
+    [self.controlView layoutIfNeeded];
+}
+
+- (void)forcePlayerViewRotate2FullScreenOrientationLandscapeRight {
+    self.isRotating = YES;// 记录正在旋转屏幕
+    
+    if (!self.fullScreenViewController) {
+        self.fullScreenViewController = [[ZFFullscreenPlayerViewController alloc] init];
+        self.fullScreenViewController.view.backgroundColor = [UIColor blackColor];
+    }
+    
+    UIView *containerView = [[UIView alloc] initWithFrame:self.rootViewController.view.bounds];
+    containerView.backgroundColor = [UIColor clearColor];
+    [self.rootViewController.view addSubview:containerView];
+    
+    [self removeFromSuperview];
+    [containerView addSubview:self];
+    
+    [containerView mas_makeConstraints:^(MASConstraintMaker *make) {
+        make.edges.mas_equalTo(0);
+    }];
+    [self mas_remakeConstraints:^(MASConstraintMaker *make) {
+        make.edges.equalTo(self.playerModel.fatherView);
+    }];
+    [self.rootViewController.view layoutIfNeeded];
+    
+    [self mas_remakeConstraints:^(MASConstraintMaker *make) {
+        make.center.equalTo(containerView);
+        make.width.equalTo(containerView.mas_height);
+        make.height.equalTo(containerView.mas_width);
+    }];
+    [UIView animateWithDuration:[UIApplication sharedApplication].statusBarOrientationAnimationDuration animations:^{
+        self.transform = CGAffineTransformMakeRotation(M_PI_2);
+        containerView.backgroundColor = [UIColor blackColor];
+        [containerView layoutIfNeeded];
+    } completion:^(BOOL finished) {
+        self.fullScreenViewController.view.backgroundColor = [UIColor clearColor];
+        [self.rootViewController presentViewController:self.fullScreenViewController animated:NO completion:^{
+            [[UIApplication sharedApplication] setStatusBarOrientation:UIInterfaceOrientationLandscapeRight animated:NO];
+            
+            [self removeFromSuperview];
+            self.transform = CGAffineTransformIdentity;
+            
+            [self.fullScreenViewController.view addSubview:self];
+            [self mas_remakeConstraints:^(MASConstraintMaker *make) {
+                make.edges.mas_equalTo(0);
+            }];
+            
+            [self.fullScreenViewController.view layoutIfNeeded];
+            [containerView removeFromSuperview];
+            
+            self.isRotating = NO;// 完成旋转屏幕
+        }];
+    }];
 }
 
 /**
@@ -1015,8 +1172,13 @@ typedef NS_ENUM(NSInteger, PanDirection){
             weakSelf.isDragged = NO;
             // 结束滑动
             [weakSelf.controlView zf_playerDraggedEnd];
-            if (!weakSelf.playerItem.isPlaybackLikelyToKeepUp && !weakSelf.isLocalVideo) { weakSelf.state = ZFPlayerStateBuffering; }
-            
+            if (!weakSelf.isLocalVideo) {
+                if (weakSelf.playerItem.isPlaybackLikelyToKeepUp) {
+                    weakSelf.state = ZFPlayerStatePlaying;
+                } else {
+                    weakSelf.state = ZFPlayerStateBuffering;
+                }
+            }
         }];
     }
 }
@@ -1262,12 +1424,15 @@ typedef NS_ENUM(NSInteger, PanDirection){
     switch (playerLayerGravity) {
         case ZFPlayerLayerGravityResize:
             self.playerLayer.videoGravity = AVLayerVideoGravityResize;
+            self.videoGravity = AVLayerVideoGravityResize;
             break;
         case ZFPlayerLayerGravityResizeAspect:
             self.playerLayer.videoGravity = AVLayerVideoGravityResizeAspect;
+            self.videoGravity = AVLayerVideoGravityResizeAspect;
             break;
         case ZFPlayerLayerGravityResizeAspectFill:
             self.playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+            self.videoGravity = AVLayerVideoGravityResizeAspectFill;
             break;
         default:
             break;
@@ -1305,6 +1470,7 @@ typedef NS_ENUM(NSInteger, PanDirection){
     if (playerModel.seekTime) { self.seekTime = playerModel.seekTime; }
     
     [self.controlView zf_playerModel:playerModel];
+
     if (playerModel.resolutionDic) {
         self.resolutionDic = playerModel.resolutionDic;
     }
@@ -1342,6 +1508,13 @@ typedef NS_ENUM(NSInteger, PanDirection){
         _brightnessView = [ZFBrightnessView sharedBrightnessView];
     }
     return _brightnessView;
+}
+
+- (NSString *)videoGravity {
+    if (!_videoGravity) {
+        _videoGravity = AVLayerVideoGravityResizeAspect;
+    }
+    return _videoGravity;
 }
 
 #pragma mark - ZFPlayerControlViewDelegate
@@ -1437,6 +1610,12 @@ typedef NS_ENUM(NSInteger, PanDirection){
     }
 }
 
+- (void)zf_controlView:(UIView *)controlView moreAction:(UIButton *)sender {
+    if ([self.delegate respondsToSelector:@selector(zf_playerMoreAction)]) {
+        [self.delegate zf_playerMoreAction];
+    }
+}
+
 - (void)zf_controlView:(UIView *)controlView progressSliderTap:(CGFloat)value {
     // 视频总时间长度
     CGFloat total = (CGFloat)self.playerItem.duration.value / self.playerItem.duration.timescale;
@@ -1513,6 +1692,7 @@ typedef NS_ENUM(NSInteger, PanDirection){
         NSInteger dragedSeconds = floorf(total * slider.value);
         [self seekToTime:dragedSeconds completionHandler:nil];
     }
+    self.playDidEnd = NO;
 }
 
 #pragma clang diagnostic pop
